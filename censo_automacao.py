@@ -23,7 +23,6 @@ Rodar:
 import csv
 import os
 import sys
-import time
 
 import openpyxl
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
@@ -157,6 +156,21 @@ def clicar_botao_js(page, texto_exato):
     )
     if not ok:
         raise RuntimeError(f"Botão '{texto_exato}' não encontrado na página.")
+
+
+def pesquisa_encontrou(page, espera_ms=15_000):
+    """Espera o resultado da pesquisa de aluno aparecer; True se achou registro.
+
+    A espera fixa de 3s usada antes gerava falsos "nao_encontrado" quando o
+    site demorava a responder (confirmado em 18/07/2026: 6 alunos marcados
+    como nao_encontrado na véspera existiam no sistema)."""
+    try:
+        page.wait_for_function(
+            "() => document.body.innerText.includes('Foi encontrado')",
+            timeout=espera_ms)
+        return True
+    except PWTimeout:
+        return False
 
 
 # ------------------------- PLANILHA -------------------------
@@ -317,11 +331,10 @@ def processar_aluno(page, aluno):
 
     # 3) pesquisar
     page.get_by_role("button", name="Pesquisar").click()
-    page.wait_for_timeout(3000)
-
-    corpo = page.locator("body").inner_text()
-    if "Foi encontrado" not in corpo:
+    if not pesquisa_encontrou(page):
         return "nao_encontrado"
+    page.wait_for_timeout(500)
+    corpo = page.locator("body").inner_text()
     if "Pessoa possui vínculo de aluno nesta escola" in corpo:
         return "ja_vinculado"
 

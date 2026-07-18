@@ -26,7 +26,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 from censo_automacao import (
     URL_BASE, PASTA, PASTA_PERFIL, PASTA_ERROS, TIMEOUT, TURNOS_VALIDOS,
-    ARQ_RESULTADO, fazer_login, carregar_alunos, chave,
+    ARQ_RESULTADO, fazer_login, carregar_alunos, chave, pesquisa_encontrou,
     clicar_botao_js, preencher_formulario_vinculo)
 
 ARQ_CADASTRO = os.path.join(PASTA, "cadastro_resultado.csv")
@@ -86,15 +86,20 @@ def escolher_select_por_rotulo(page, rotulo, opcao):
     page.wait_for_timeout(600)
 
 
-def preencher_por_placeholder(page, trecho, valor):
-    """Digita tecla a tecla no input cujo placeholder contém `trecho`
-    (campos com máscara exigem digitação sequencial)."""
-    campo = page.locator(f"input[placeholder*='{trecho}']").first
+def preencher_input(page, campo, valor):
+    """Limpa e digita tecla a tecla (campos com máscara exigem isso)."""
     campo.wait_for(state="visible", timeout=TIMEOUT)
     campo.click()
     campo.press("Control+a")
     campo.press("Delete")
     campo.press_sequentially(valor, delay=40)
+
+
+def preencher_por_placeholder(page, trecho, valor):
+    """Digita no input cujo placeholder contém `trecho` (formulário de
+    cadastro, onde os ids são dinâmicos do Angular)."""
+    preencher_input(page, page.locator(f"input[placeholder*='{trecho}']").first,
+                    valor)
 
 
 def responder_nao_pendentes(page):
@@ -179,8 +184,7 @@ def cadastrar_aluno(page, a):
     campo_cpf.press("Delete")
     campo_cpf.press_sequentially(cpf, delay=40)
     page.get_by_role("button", name="Pesquisar").click()
-    page.wait_for_timeout(3000)
-    if "Foi encontrado" in page.locator("body").inner_text():
+    if pesquisa_encontrou(page):
         return "ja_existe_rodar_v1"
 
     if not nascimento:
@@ -200,15 +204,14 @@ def cadastrar_aluno(page, a):
             if (alvo) alvo.click();
         }""")
     page.wait_for_timeout(800)
-    preencher_por_placeholder(page, "Nome completo", nome)
-    preencher_por_placeholder(page, "Data de nascimento",
-                              nascimento.replace("/", ""))
-    campo_data = page.locator("input[placeholder*='Data de nascimento']").first
+    # ids fixos no HTML da tela de pesquisa (validados no mapeamento)
+    preencher_input(page, page.locator("#nomePessoaFisica"), nome)
+    campo_data = page.locator("#dataNascimento")
+    preencher_input(page, campo_data, nascimento.replace("/", ""))
     if "/" not in campo_data.input_value():   # campo sem máscara automática
-        preencher_por_placeholder(page, "Data de nascimento", nascimento)
+        preencher_input(page, campo_data, nascimento)
     page.evaluate("document.getElementById('botao-pesquisar').click()")
-    page.wait_for_timeout(3000)
-    if "Foi encontrado" in page.locator("body").inner_text():
+    if pesquisa_encontrou(page):
         return "achado_por_nome_verificar_manual"
 
     # 3) botão cadastrar -> formulário de dados cadastrais
