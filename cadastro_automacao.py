@@ -160,6 +160,27 @@ def sem_acento(texto):
                    if unicodedata.category(c) != "Mn").upper().strip()
 
 
+def abrir_filtros_detalhados(page):
+    """Expande o painel "Filtros de pesquisa detalhada" e CONFERE que o
+    campo de nome apareceu; o clique às vezes não expande de primeira
+    (visto ao vivo em 18/07/2026), então tenta algumas vezes."""
+    for _ in range(5):
+        page.evaluate(
+            """() => {
+                const cab = [...document.querySelectorAll(
+                    'mat-expansion-panel-header, mat-panel-title')]
+                    .find(t => t.textContent.includes('Filtros de pesquisa'));
+                if (cab) cab.click();
+            }""")
+        page.wait_for_timeout(900)
+        aberto = page.evaluate(
+            "() => { const el = document.getElementById('nomePessoaFisica');"
+            " return !!el && el.offsetParent !== null; }")
+        if aberto:
+            return
+    raise RuntimeError("Painel 'Filtros de pesquisa detalhada' não abriu.")
+
+
 def naturalidade_uf_municipio(naturalidade):
     """"SAO JOSE DO BELMONTE-PE" -> ("PE", "SAO JOSE DO BELMONTE");
     capital sem UF -> UF conhecida; cidade ambígua sem UF -> None."""
@@ -214,13 +235,7 @@ def cadastrar_aluno(page, a):
     # Com o CPF digitado o campo de nome não fica editável — recarrega a
     # tela de pesquisa antes de usar os filtros detalhados.
     ir_para_pesquisa(page)
-    page.evaluate(
-        """() => {
-            const alvo = [...document.querySelectorAll('mat-panel-title')]
-                .find(t => t.textContent.includes('Filtros de pesquisa'));
-            if (alvo) alvo.click();
-        }""")
-    page.wait_for_timeout(800)
+    abrir_filtros_detalhados(page)
     # ids fixos no HTML da tela de pesquisa (validados no mapeamento)
     preencher_input(page, "#nomePessoaFisica", nome)
     preencher_input(page, "#dataNascimento", nascimento.replace("/", ""))
@@ -328,8 +343,8 @@ def main():
 
     feitos = carregar_cadastro_feito()
     ok = {"cadastrado_vinculado", "ja_existe_rodar_v1"}
-    alvo = [a for a in carregar_alunos()
-            if chave(a) in nao_encontrados and feitos.get(chave(a)) not in ok]
+    alunos_alvo = [a for a in carregar_alunos() if chave(a) in nao_encontrados]
+    alvo = [a for a in alunos_alvo if feitos.get(chave(a)) not in ok]
     print(f"\n[plano] {len(nao_encontrados)} nao_encontrado no CSV da v1, "
           f"{len(alvo)} pendentes de cadastro"
           + (f" (limite desta execução: {max_cadastros})" if max_cadastros < 10**9
@@ -338,9 +353,11 @@ def main():
         print("Nada a fazer.")
         return
 
+    # o CSV guarda TODOS os alunos alvo (não só os desta execução), para
+    # não perder statuses de rodadas anteriores ao regravar o arquivo
     resultado = [{"cpf": a["cpf"], "nome": a["nome"], "turno": a["turno"],
                   "ano": a["ano"], "status": feitos.get(chave(a), "pendente")}
-                 for a in alvo]
+                 for a in alunos_alvo]
     por_chave = {f"{r['cpf']}|{r['ano']}": r for r in resultado}
 
     os.makedirs(PASTA_ERROS, exist_ok=True)
