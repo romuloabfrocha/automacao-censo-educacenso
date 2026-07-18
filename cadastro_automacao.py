@@ -302,16 +302,28 @@ def cadastrar_aluno(page, a):
     passo("form_dados")
     # 4) dados cadastrais — nome e nascimento vêm preenchidos da pesquisa
     preencher_por_placeholder(page, "2 - Número do CPF", cpf)
-    if a["mae"]:
+    # Ao digitar o CPF o site consulta a Receita Federal e AUTO-PREENCHE a
+    # filiação 1 (descoberto em 18/07/2026: sobrescrever duplicava o nome na
+    # 5b e o site recusava). Espera o autofill e só completa o que faltar.
+    page.wait_for_timeout(4000)
+
+    def ler_filiacoes():
+        return page.evaluate(
+            "() => ['5a', '5b'].map(p => { const el = document.querySelector("
+            "`input[placeholder*='${p} - Nome completo']`);"
+            " return el ? el.value.trim() : ''; })")
+
+    val5a, val5b = ler_filiacoes()
+    if not val5a and a["mae"]:
         preencher_por_placeholder(page, "5a - Nome completo da filiação 1",
                                   a["mae"])
-    if a["pai"]:
+        val5a, val5b = ler_filiacoes()
+    candidatos_5b = [n for n in (a["pai"], a["mae"])
+                     if n and sem_acento(n) != sem_acento(val5a)]
+    if not val5b and candidatos_5b:
         preencher_por_placeholder(page, "5b - Nome completo da filiação 2",
-                                  a["pai"])
-    filiacoes = page.evaluate(
-        "() => ['5a', '5b'].map(p => { const el = document.querySelector("
-        "`input[placeholder*='${p} - Nome completo']`);"
-        " return el ? el.value : null; })")
+                                  candidatos_5b[0])
+    filiacoes = ler_filiacoes()
     print(f"(5a={filiacoes[0]!r} 5b={filiacoes[1]!r})", end=" ", flush=True)
     passo("selects")
     escolher_select_por_rotulo(page, "6 - Sexo", SEXO_OPCAO[a["sexo"]])
