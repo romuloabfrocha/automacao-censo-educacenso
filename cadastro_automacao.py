@@ -116,6 +116,40 @@ def preencher_por_placeholder(page, trecho, valor):
     preencher_input(page, f"input[placeholder*='{trecho}']", valor)
 
 
+def preencher_por_placeholder_js(page, trecho, valor):
+    """Seta o valor via setter nativo + eventos do Angular. Obrigatório para
+    campos com acentos: keyboard.type PERDIA os acentos (18/07/2026 — três
+    filiações entraram no sistema como 'JOS', 'JOO' e 'NO CONSTA')."""
+    seletor = f"input[placeholder*='{trecho}']"
+    page.wait_for_selector(seletor, state="visible", timeout=TIMEOUT)
+    ok = page.evaluate(
+        """(args) => {
+            const el = document.querySelector(args.sel);
+            if (!el || el.offsetParent === null) return false;
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value').set;
+            setter.call(el, args.valor);
+            for (const ev of ['input', 'change', 'blur'])
+                el.dispatchEvent(new Event(ev, {bubbles: true}));
+            return true;
+        }""",
+        {"sel": seletor, "valor": valor},
+    )
+    if not ok:
+        raise RuntimeError(f"Input '{seletor}' não encontrado.")
+    page.wait_for_timeout(300)
+
+
+SEM_FILIACAO = {"NAO CONSTA", "NAO DECLARADO", "NAO DECLARADA",
+                "NAO INFORMADO", "SEM INFORMACAO", "-", "N/D", "ND", "X",
+                "XX", "XXX"}
+
+
+def filiacao_valida(valor):
+    """Nome de filiação de verdade — marcadores tipo 'NÃO CONSTA' não são."""
+    return bool(valor) and sem_acento(valor) not in SEM_FILIACAO
+
+
 def responder_nao_pendentes(page):
     """Marca "Não" em todo grupo Sim/Não visível ainda sem resposta
     (no cadastro observado eram dois grupos, ambos respondidos "Não")."""
@@ -314,15 +348,16 @@ def cadastrar_aluno(page, a):
             " return el ? el.value.trim() : ''; })")
 
     val5a, val5b = ler_filiacoes()
-    if not val5a and a["mae"]:
-        preencher_por_placeholder(page, "5a - Nome completo da filiação 1",
-                                  a["mae"])
+    if not val5a and filiacao_valida(a["mae"]):
+        preencher_por_placeholder_js(page, "5a - Nome completo da filiação 1",
+                                     a["mae"])
         val5a, val5b = ler_filiacoes()
     candidatos_5b = [n for n in (a["pai"], a["mae"])
-                     if n and sem_acento(n) != sem_acento(val5a)]
+                     if filiacao_valida(n)
+                     and sem_acento(n) != sem_acento(val5a)]
     if not val5b and candidatos_5b:
-        preencher_por_placeholder(page, "5b - Nome completo da filiação 2",
-                                  candidatos_5b[0])
+        preencher_por_placeholder_js(page, "5b - Nome completo da filiação 2",
+                                     candidatos_5b[0])
     filiacoes = ler_filiacoes()
     print(f"(5a={filiacoes[0]!r} 5b={filiacoes[1]!r})", end=" ", flush=True)
     passo("selects")
@@ -471,7 +506,7 @@ def main():
                             PASTA_ERROS, f"cadastro_{a['cpf']}.png"))
                     except Exception:
                         pass
-                if status.startswith(("cadastrado", "erro")):
+                if status.startswith(("cadastr", "erro")):
                     cadastrados += 1   # conta tentativas reais de cadastro
                 print(status)
                 por_chave[f"{a['cpf']}|{a['ano']}"]["status"] = status
