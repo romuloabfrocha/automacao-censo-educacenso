@@ -370,14 +370,9 @@ def cadastrar_aluno(page, a):
     # 5b e o site recusava). Espera o autofill e só completa o que faltar.
     page.wait_for_timeout(4000)
 
-    # o campo 3 herda o nome da busca (sem acentos); restaura o nome com
-    # acentos da planilha — a menos que a Receita tenha posto outro nome
-    val_nome = page.evaluate(
-        "() => { const el = document.querySelector("
-        "\"input[placeholder*='3 - Nome completo']\");"
-        " return el ? el.value.trim() : ''; }")
-    if val_nome != nome and sem_acento(val_nome) == sem_acento(nome):
-        preencher_por_placeholder_js(page, "3 - Nome completo", nome)
+    # Convenção do Educacenso: nomes SEM acentos (a Receita auto-preenche
+    # tudo sem acento e o validador recusa acentos — "valor não permitido").
+    # O campo 3 herda o nome da busca, que já vai sem acentos.
 
     def ler_filiacoes():
         return page.evaluate(
@@ -388,14 +383,14 @@ def cadastrar_aluno(page, a):
     val5a, val5b = ler_filiacoes()
     if not val5a and filiacao_valida(a["mae"]):
         preencher_por_placeholder_js(page, "5a - Nome completo da filiação 1",
-                                     a["mae"])
+                                     sem_acento(a["mae"]))
         val5a, val5b = ler_filiacoes()
     candidatos_5b = [n for n in (a["pai"], a["mae"])
                      if filiacao_valida(n)
                      and sem_acento(n) != sem_acento(val5a)]
     if not val5b and candidatos_5b:
         preencher_por_placeholder_js(page, "5b - Nome completo da filiação 2",
-                                     candidatos_5b[0])
+                                     sem_acento(candidatos_5b[0]))
     filiacoes = ler_filiacoes()
     print(f"(5a={filiacoes[0]!r} 5b={filiacoes[1]!r})", end=" ", flush=True)
     passo("selects")
@@ -499,7 +494,9 @@ def main():
                            if r["status"] == "nao_encontrado"}
 
     feitos = carregar_cadastro_feito()
-    ok = {"cadastrado_vinculado", "ja_existe_rodar_v1"}
+    ok = {"cadastrado_vinculado", "ja_existe_rodar_v1",
+          "achado_por_nome_verificar_manual",
+          "achado_sem_ultimo_sobrenome_verificar_manual"}
     alunos_alvo = [a for a in carregar_alunos() if chave(a) in nao_encontrados]
     alvo = [a for a in alunos_alvo if feitos.get(chave(a)) not in ok]
     print(f"\n[plano] {len(nao_encontrados)} nao_encontrado no CSV da v1, "
