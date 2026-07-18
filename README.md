@@ -41,8 +41,15 @@ playwright install chromium
 ## Uso
 
 ```bash
-python censo_automacao.py
+python censo_automacao.py       # v1: vincula às turmas quem já existe
+python cadastro_automacao.py    # v2: cadastra quem não foi encontrado
 ```
+
+O fluxo recomendado é rodar a v1, depois a v2 para os `nao_encontrado` e a
+v1 de novo (o vínculo pós-cadastro nem sempre emenda sozinho). A v2 aceita
+um limite de cadastros por execução (`python cadastro_automacao.py 1` para
+testar com um aluno). Alunos com possível cadastro pré-existente sob nome
+de solteira são marcados para revisão manual em vez de cadastrados.
 
 - Uma janela do Chrome abre; o login fica salvo na pasta `perfil_chrome/`
   (só precisa logar na primeira vez)
