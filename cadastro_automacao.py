@@ -215,6 +215,48 @@ def abrir_filtros_detalhados(page):
     raise RuntimeError("Painel 'Filtros de pesquisa detalhada' não abriu.")
 
 
+def pesquisar_por_nome(page, nome_busca, nascimento):
+    """Executa a pesquisa detalhada por nome + data de nascimento.
+
+    Retorna True se encontrou registro, False se não encontrou e None se o
+    painel de filtros não estabilizou. O painel às vezes recolhe sozinho
+    após re-render do Angular, então abre+digita em loop até os valores
+    persistirem; os valores entram via setter nativo + eventos do Angular
+    (teclado/clique simulados falham neste site)."""
+    for tentativa in range(4):
+        try:
+            abrir_filtros_detalhados(page)
+            page.wait_for_timeout(1200)
+            valores = page.evaluate(
+                """(dados) => {
+                    const setar = (id, valor) => {
+                        const el = document.getElementById(id);
+                        if (!el || el.offsetParent === null) return '';
+                        const setter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(el, valor);
+                        for (const ev of ['input', 'change', 'blur'])
+                            el.dispatchEvent(new Event(ev, {bubbles: true}));
+                        return el.value;
+                    };
+                    return [setar('nomePessoaFisica', dados.nome),
+                            setar('dataNascimento', dados.data)];
+                }""",
+                {"nome": nome_busca, "data": nascimento},
+            )
+            page.wait_for_timeout(600)
+            if valores[0].strip() and valores[1].strip():
+                page.evaluate(
+                    "document.getElementById('botao-pesquisar').click()")
+                return pesquisa_encontrou(page)
+            print(f"(tentativa {tentativa + 1}: valores={valores!r})",
+                  end=" ", flush=True)
+        except (PWTimeout, RuntimeError) as e:
+            print(f"(tentativa {tentativa + 1}: {type(e).__name__})",
+                  end=" ", flush=True)
+    return None
+
+
 def naturalidade_uf_municipio(naturalidade):
     """"SAO JOSE DO BELMONTE-PE" -> ("PE", "SAO JOSE DO BELMONTE");
     capital sem UF -> UF conhecida; cidade ambígua sem UF -> None."""
@@ -284,43 +326,25 @@ def cadastrar_aluno(page, a):
     # (re-render do Angular pós-recarga); repete abrir+digitar até os dois
     # valores persistirem. Ids fixos validados no mapeamento ao vivo.
     passo("nome_data")
-    for tentativa in range(4):
-        try:
-            abrir_filtros_detalhados(page)
-            page.wait_for_timeout(1200)
-            # valor via setter nativo + eventos do Angular (mesma técnica
-            # validada na carga horária da v1) — teclado/foco se mostraram
-            # frágeis nesses dois campos
-            valores = page.evaluate(
-                """(dados) => {
-                    const setar = (id, valor) => {
-                        const el = document.getElementById(id);
-                        if (!el || el.offsetParent === null) return '';
-                        const setter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value').set;
-                        setter.call(el, valor);
-                        for (const ev of ['input', 'change', 'blur'])
-                            el.dispatchEvent(new Event(ev, {bubbles: true}));
-                        return el.value;
-                    };
-                    return [setar('nomePessoaFisica', dados.nome),
-                            setar('dataNascimento', dados.data)];
-                }""",
-                {"nome": nome, "data": nascimento},
-            )
-            page.wait_for_timeout(600)
-            if valores[0].strip() and valores[1].strip():
-                break
-            print(f"(tentativa {tentativa + 1}: valores={valores!r})",
-                  end=" ", flush=True)
-        except (PWTimeout, RuntimeError) as e:
-            print(f"(tentativa {tentativa + 1}: {type(e).__name__})",
-                  end=" ", flush=True)
-    else:
+    # 2a) nome completo sem acentos (o validador do site recusa acentos —
+    # "Informação inválida" — e a pesquisa nem roda)
+    achou_nome = pesquisar_por_nome(page, sem_acento(nome), nascimento)
+    if achou_nome is None:
         return "erro_painel_filtros_instavel"
-    page.evaluate("document.getElementById('botao-pesquisar').click()")
-    if pesquisa_encontrou(page):
+    if achou_nome:
         return "achado_por_nome_verificar_manual"
+
+    # 2b) proteção contra duplicidade: o último sobrenome pode ser nome de
+    # casada; se a pessoa existir com o nome de solteira, revisar manualmente
+    partes = nome.split()
+    if len(partes) > 2:
+        achou_curto = pesquisar_por_nome(
+            page, sem_acento(" ".join(partes[:-1])), nascimento)
+        if achou_curto:
+            return "achado_sem_ultimo_sobrenome_verificar_manual"
+        # refaz a busca com o nome completo para o cadastro herdar o certo
+        if pesquisar_por_nome(page, sem_acento(nome), nascimento):
+            return "achado_por_nome_verificar_manual"
 
     passo("botao_cadastrar")
     # 3) botão cadastrar -> formulário de dados cadastrais
@@ -328,6 +352,11 @@ def cadastrar_aluno(page, a):
         "() => { const b = document.getElementById('botao-cadastrar');"
         " if (!b) return false; b.click(); return true; }")
     if not achou:
+        page.screenshot(path=os.path.join(
+            PASTA_ERROS, f"sem_botao_{cpf}.png"), full_page=True)
+        with open(os.path.join(PASTA_ERROS, f"sem_botao_{cpf}.txt"),
+                  "w", encoding="utf-8") as f:
+            f.write(page.locator("body").inner_text())
         return "botao_cadastrar_nao_apareceu"
     page.wait_for_selector("input[placeholder*='2 - Número do CPF']",
                            timeout=TIMEOUT)
@@ -340,6 +369,15 @@ def cadastrar_aluno(page, a):
     # filiação 1 (descoberto em 18/07/2026: sobrescrever duplicava o nome na
     # 5b e o site recusava). Espera o autofill e só completa o que faltar.
     page.wait_for_timeout(4000)
+
+    # o campo 3 herda o nome da busca (sem acentos); restaura o nome com
+    # acentos da planilha — a menos que a Receita tenha posto outro nome
+    val_nome = page.evaluate(
+        "() => { const el = document.querySelector("
+        "\"input[placeholder*='3 - Nome completo']\");"
+        " return el ? el.value.trim() : ''; }")
+    if val_nome != nome and sem_acento(val_nome) == sem_acento(nome):
+        preencher_por_placeholder_js(page, "3 - Nome completo", nome)
 
     def ler_filiacoes():
         return page.evaluate(
