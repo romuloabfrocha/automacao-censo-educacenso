@@ -391,7 +391,29 @@ def cadastrar_aluno(page, a):
     if not val5b and candidatos_5b:
         preencher_por_placeholder_js(page, "5b - Nome completo da filiação 2",
                                      sem_acento(candidatos_5b[0]))
+    # filiação que ficar vazia exige marcar o checkbox "Não declarado"
+    # ao lado (índice 0 = 5a, índice 1 = 5b na ordem do formulário)
     filiacoes = ler_filiacoes()
+    for indice, valor in enumerate(filiacoes):
+        if valor:
+            continue
+        marcado = page.evaluate(
+            """(idx) => {
+                const caixas = [...document.querySelectorAll('mat-checkbox')]
+                    .filter(el => el.offsetParent !== null
+                        && el.textContent.trim() === 'Não declarado');
+                const alvo = caixas[idx];
+                if (!alvo) return false;
+                const input = alvo.querySelector('input');
+                if (!input) return false;
+                if (!input.checked) input.click();
+                return true;
+            }""",
+            indice,
+        )
+        print(f"(5{'ab'[indice]} vazia -> Não declarado: {marcado})",
+              end=" ", flush=True)
+        page.wait_for_timeout(400)
     print(f"(5a={filiacoes[0]!r} 5b={filiacoes[1]!r})", end=" ", flush=True)
     passo("selects")
     escolher_select_por_rotulo(page, "6 - Sexo", SEXO_OPCAO[a["sexo"]])
