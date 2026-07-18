@@ -1,8 +1,8 @@
 # Segredos — NUNCA commitar
 .env
 
-# Dados reais de alunos
-DADOSCENSO2026.xlsx
+# Dados reais de alunos (inclui backups tipo DADOSCENSO2026.backup-*.xlsx)
+DADOSCENSO*.xlsx
 censo_resultado.csv
 
 # Sessão do navegador (contém cookies de login)
