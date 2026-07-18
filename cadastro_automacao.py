@@ -290,7 +290,7 @@ def passo(msg):
     print(f"[{msg}]", end=" ", flush=True)
 
 
-def cadastrar_aluno(page, a):
+def cadastrar_aluno(page, a, forcar=False):
     cpf, nome, nascimento = a["cpf"], a["nome"], a["nascimento"]
 
     passo("pesq_cpf")
@@ -336,7 +336,10 @@ def cadastrar_aluno(page, a):
 
     # 2b) proteção contra duplicidade: o último sobrenome pode ser nome de
     # casada; se a pessoa existir com o nome de solteira, revisar manualmente
+    # (pulado com --cadastrar-mesmo-assim, decisão do usuário em 18/07/2026)
     partes = nome.split()
+    if forcar:
+        partes = []
     if len(partes) > 2:
         achou_curto = pesquisar_por_nome(
             page, sem_acento(" ".join(partes[:-1])), nascimento)
@@ -506,7 +509,10 @@ def gravar_cadastro(linhas):
 
 
 def main():
-    max_cadastros = int(sys.argv[1]) if len(sys.argv) > 1 else 10**9
+    args = sys.argv[1:]
+    forcar = "--cadastrar-mesmo-assim" in args
+    numeros = [x for x in args if x.isdigit()]
+    max_cadastros = int(numeros[0]) if numeros else 10**9
 
     if not os.path.exists(ARQ_RESULTADO):
         sys.exit("censo_resultado.csv não existe — rode a v1 primeiro.")
@@ -516,9 +522,10 @@ def main():
                            if r["status"] == "nao_encontrado"}
 
     feitos = carregar_cadastro_feito()
-    ok = {"cadastrado_vinculado", "ja_existe_rodar_v1",
-          "achado_por_nome_verificar_manual",
-          "achado_sem_ultimo_sobrenome_verificar_manual"}
+    ok = {"cadastrado_vinculado", "ja_existe_rodar_v1"}
+    if not forcar:   # com --cadastrar-mesmo-assim, os "achado_*" são retentados
+        ok |= {"achado_por_nome_verificar_manual",
+               "achado_sem_ultimo_sobrenome_verificar_manual"}
     alunos_alvo = [a for a in carregar_alunos() if chave(a) in nao_encontrados]
     alvo = [a for a in alunos_alvo if feitos.get(chave(a)) not in ok]
     print(f"\n[plano] {len(nao_encontrados)} nao_encontrado no CSV da v1, "
@@ -552,7 +559,7 @@ def main():
                 print(f"[{i}/{len(alvo)}] ({a['ano']}) {a['nome']} "
                       f"({a['cpf']}, {a['turno']})...", end=" ", flush=True)
                 try:
-                    status = cadastrar_aluno(page, a)
+                    status = cadastrar_aluno(page, a, forcar=forcar)
                 except PWTimeout:
                     status = "erro_timeout"
                 except Exception as e:
