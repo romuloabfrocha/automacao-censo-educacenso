@@ -1,0 +1,26 @@
+# .graphifyignore — o que o Graphify NÃO deve indexar no grafo.
+# O .gitignore já é respeitado automaticamente; aqui reforçamos os dados
+# sensíveis e excluímos binários/artefatos que não ajudam no grafo.
+
+# Dados de alunos e credenciais — NUNCA indexar
+.env
+DADOSCENSO*.xlsx
+censo_resultado.csv
+cadastro_resultado.csv
+perfil_chrome/
+erros/
+mapeamento_cadastro.*
+observacao_cadastro.log
+CLAUDE.md
+
+# Planilha modelo e demais binários (nada útil pro grafo)
+*.xlsx
+*.png
+
+# Pastas de terceiros / artefatos
+vendor/
+node_modules/
+dist/
+Nova pasta/
+__pycache__/
+*.generated.py
