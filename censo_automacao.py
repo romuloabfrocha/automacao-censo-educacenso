@@ -217,6 +217,7 @@ def carregar_alunos():
                 "sexo": _celula(row, idx, "SEXO").upper(),
                 "cor": _celula(row, idx, "COR").upper(),
                 "naturalidade": _celula(row, idx, "NATURALIDADE").upper(),
+                "uf": _celula(row, idx, "UF").upper(),
             })
             qtd += 1
         print(f"[planilha] Aba {ws.title!r}: {qtd} alunos -> turmas {ano}")

@@ -86,11 +86,11 @@ def escolher_select_por_rotulo(page, rotulo, opcao):
     page.wait_for_timeout(600)
 
 
-def preencher_input(page, seletor, valor):
+def preencher_input(page, seletor, valor, espera_ms=TIMEOUT):
     """Foca o input via JS nativo (clique simulado é engolido por overlay
     neste site — aprendizado nº 1 do projeto) e digita tecla a tecla pelo
     teclado, que é o que as máscaras dos campos exigem."""
-    page.wait_for_selector(seletor, state="visible", timeout=TIMEOUT)
+    page.wait_for_selector(seletor, state="visible", timeout=espera_ms)
     ok = page.evaluate(
         """(sel) => {
             const el = document.querySelector(sel);
@@ -232,7 +232,10 @@ def cadastrar_aluno(page, a):
         return "sem_data_nascimento_na_planilha"
     if not SEXO_OPCAO.get(a["sexo"]):
         return f"sexo_invalido({a['sexo']})"
-    uf_nasc, municipio_nasc = naturalidade_uf_municipio(a["naturalidade"])
+    if a.get("uf"):   # coluna UF da planilha tem prioridade
+        uf_nasc, municipio_nasc = a["uf"], a["naturalidade"]
+    else:
+        uf_nasc, municipio_nasc = naturalidade_uf_municipio(a["naturalidade"])
     if not uf_nasc:
         return f"naturalidade_sem_uf({a['naturalidade']})"
 
@@ -242,13 +245,32 @@ def cadastrar_aluno(page, a):
     # tela de pesquisa antes de usar os filtros detalhados.
     passo("filtros")
     ir_para_pesquisa(page)
-    abrir_filtros_detalhados(page)
-    # ids fixos no HTML da tela de pesquisa (validados no mapeamento)
+    page.wait_for_timeout(2000)   # SPA assenta após a recarga
+    # O painel de filtros às vezes recolhe sozinho logo depois de aberto
+    # (re-render do Angular pós-recarga); repete abrir+digitar até os dois
+    # valores persistirem. Ids fixos validados no mapeamento ao vivo.
     passo("nome_data")
-    preencher_input(page, "#nomePessoaFisica", nome)
-    preencher_input(page, "#dataNascimento", nascimento.replace("/", ""))
-    if "/" not in page.locator("#dataNascimento").input_value():
-        preencher_input(page, "#dataNascimento", nascimento)  # sem máscara
+    for _ in range(4):
+        try:
+            abrir_filtros_detalhados(page)
+            page.wait_for_timeout(1200)
+            preencher_input(page, "#nomePessoaFisica", nome, espera_ms=5000)
+            preencher_input(page, "#dataNascimento",
+                            nascimento.replace("/", ""), espera_ms=5000)
+            if "/" not in page.locator("#dataNascimento").input_value():
+                preencher_input(page, "#dataNascimento", nascimento,
+                                espera_ms=5000)   # campo sem máscara
+            valores = page.evaluate(
+                "() => { const n = document.getElementById('nomePessoaFisica');"
+                " const d = document.getElementById('dataNascimento');"
+                " return [n && n.offsetParent !== null ? n.value : '',"
+                "         d && d.offsetParent !== null ? d.value : '']; }")
+            if valores[0].strip() and valores[1].strip():
+                break
+        except (PWTimeout, RuntimeError):
+            pass
+    else:
+        return "erro_painel_filtros_instavel"
     page.evaluate("document.getElementById('botao-pesquisar').click()")
     if pesquisa_encontrou(page):
         return "achado_por_nome_verificar_manual"

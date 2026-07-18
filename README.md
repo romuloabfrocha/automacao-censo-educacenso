@@ -33,6 +33,8 @@ playwright install chromium
      **TURNO** (col. D — MATUTINO, NOTURNO ou INTEGRAL)
    - A col. A (**STATUS CENSO**) é livre para acompanhamento manual — o
      script não a lê
+   - Para o cadastro de aluno novo (v2) também são usadas DT. NASCIMENTO,
+     MAE, PAI, SEXO, COR, NATURALIDADE e **UF** (UF de nascimento)
    - As turmas no Educacenso devem conter "\<ano\> \<turno\>" no nome
      (ex.: "1º 2026 MATUTINO")
 
