@@ -5,19 +5,19 @@ foram cadastrados com o texto mutilado pelo bug de acentos do keyboard.type
 (corrigido em cadastro_automacao.py). Fluxo: pesquisar CPF -> botão editar
 -> ajustar 5b -> Continuar -> Sim -> Enviar -> Sim.
 
-SUZANA fica com a 5b vazia SEM marcar "Não declarado" (decisão do usuário).
+5b vazia exige o checkbox "Não declarado" (o site recusa vazio puro);
+usuário aprovou marcar o checkbox em 18/07/2026.
 """
 import os
 
 from playwright.sync_api import sync_playwright
 
-from censo_automacao import (URL_BASE, PASTA_PERFIL, PASTA_ERROS, TIMEOUT,
+from censo_automacao import (PASTA_PERFIL, PASTA_ERROS, TIMEOUT,
                              fazer_login, pesquisa_encontrou, clicar_botao_js)
 from cadastro_automacao import ir_para_pesquisa, preencher_por_placeholder_js
 
 CORRECOES = [
-    ("53325443591", "JAAZIEL", "JOSE FRANCISCO PINHO"),
-    ("92282555104", "CLAUDIO", "JOAO DOS SANTOS"),
+    # JAAZIEL e CLAUDIO já corrigidos em 18/07/2026
     ("81337256404", "SUZANA", ""),
 ]
 
@@ -45,6 +45,22 @@ def corrigir(page, cpf, apelido, novo_5b):
     preencher_por_placeholder_js(page, "5b - Nome completo da filiação 2",
                                  novo_5b)
     print(f"(5b: {antes!r} -> {novo_5b!r})", end=" ", flush=True)
+    if not novo_5b:
+        # 5b vazia exige o checkbox "Não declarado" (índice 1 = filiação 2)
+        marcado = page.evaluate(
+            """() => {
+                const caixas = [...document.querySelectorAll('mat-checkbox')]
+                    .filter(el => el.offsetParent !== null
+                        && el.textContent.trim() === 'Não declarado');
+                const alvo = caixas[1];
+                if (!alvo) return false;
+                const input = alvo.querySelector('input');
+                if (!input) return false;
+                if (!input.checked) input.click();
+                return true;
+            }""")
+        print(f"(Não declarado: {marcado})", end=" ", flush=True)
+        page.wait_for_timeout(500)
 
     clicar_botao_js(page, "Continuar")
     page.wait_for_timeout(1500)
