@@ -86,20 +86,34 @@ def escolher_select_por_rotulo(page, rotulo, opcao):
     page.wait_for_timeout(600)
 
 
-def preencher_input(page, campo, valor):
-    """Limpa e digita tecla a tecla (campos com máscara exigem isso)."""
-    campo.wait_for(state="visible", timeout=TIMEOUT)
-    campo.click()
-    campo.press("Control+a")
-    campo.press("Delete")
-    campo.press_sequentially(valor, delay=40)
+def preencher_input(page, seletor, valor):
+    """Foca o input via JS nativo (clique simulado é engolido por overlay
+    neste site — aprendizado nº 1 do projeto) e digita tecla a tecla pelo
+    teclado, que é o que as máscaras dos campos exigem."""
+    page.wait_for_selector(seletor, state="visible", timeout=TIMEOUT)
+    ok = page.evaluate(
+        """(sel) => {
+            const el = document.querySelector(sel);
+            if (!el || el.offsetParent === null) return false;
+            el.focus();
+            const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value').set;
+            setter.call(el, '');
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            return true;
+        }""",
+        seletor,
+    )
+    if not ok:
+        raise RuntimeError(f"Input '{seletor}' não focável.")
+    page.keyboard.type(valor, delay=40)
+    page.wait_for_timeout(200)
 
 
 def preencher_por_placeholder(page, trecho, valor):
     """Digita no input cujo placeholder contém `trecho` (formulário de
     cadastro, onde os ids são dinâmicos do Angular)."""
-    preencher_input(page, page.locator(f"input[placeholder*='{trecho}']").first,
-                    valor)
+    preencher_input(page, f"input[placeholder*='{trecho}']", valor)
 
 
 def responder_nao_pendentes(page):
@@ -196,7 +210,10 @@ def cadastrar_aluno(page, a):
         return f"naturalidade_sem_uf({a['naturalidade']})"
 
     # 2) pesquisa detalhada por nome + nascimento (necessária pro botão
-    #    "Cadastrar aluno(a)" aparecer quando não há resultados)
+    #    "Cadastrar aluno(a)" aparecer quando não há resultados).
+    # Com o CPF digitado o campo de nome não fica editável — recarrega a
+    # tela de pesquisa antes de usar os filtros detalhados.
+    ir_para_pesquisa(page)
     page.evaluate(
         """() => {
             const alvo = [...document.querySelectorAll('mat-panel-title')]
@@ -205,11 +222,10 @@ def cadastrar_aluno(page, a):
         }""")
     page.wait_for_timeout(800)
     # ids fixos no HTML da tela de pesquisa (validados no mapeamento)
-    preencher_input(page, page.locator("#nomePessoaFisica"), nome)
-    campo_data = page.locator("#dataNascimento")
-    preencher_input(page, campo_data, nascimento.replace("/", ""))
-    if "/" not in campo_data.input_value():   # campo sem máscara automática
-        preencher_input(page, campo_data, nascimento)
+    preencher_input(page, "#nomePessoaFisica", nome)
+    preencher_input(page, "#dataNascimento", nascimento.replace("/", ""))
+    if "/" not in page.locator("#dataNascimento").input_value():
+        preencher_input(page, "#dataNascimento", nascimento)  # sem máscara
     page.evaluate("document.getElementById('botao-pesquisar').click()")
     if pesquisa_encontrou(page):
         return "achado_por_nome_verificar_manual"
