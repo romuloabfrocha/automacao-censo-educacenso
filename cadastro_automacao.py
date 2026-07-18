@@ -250,25 +250,38 @@ def cadastrar_aluno(page, a):
     # (re-render do Angular pós-recarga); repete abrir+digitar até os dois
     # valores persistirem. Ids fixos validados no mapeamento ao vivo.
     passo("nome_data")
-    for _ in range(4):
+    for tentativa in range(4):
         try:
             abrir_filtros_detalhados(page)
             page.wait_for_timeout(1200)
-            preencher_input(page, "#nomePessoaFisica", nome, espera_ms=5000)
-            preencher_input(page, "#dataNascimento",
-                            nascimento.replace("/", ""), espera_ms=5000)
-            if "/" not in page.locator("#dataNascimento").input_value():
-                preencher_input(page, "#dataNascimento", nascimento,
-                                espera_ms=5000)   # campo sem máscara
+            # valor via setter nativo + eventos do Angular (mesma técnica
+            # validada na carga horária da v1) — teclado/foco se mostraram
+            # frágeis nesses dois campos
             valores = page.evaluate(
-                "() => { const n = document.getElementById('nomePessoaFisica');"
-                " const d = document.getElementById('dataNascimento');"
-                " return [n && n.offsetParent !== null ? n.value : '',"
-                "         d && d.offsetParent !== null ? d.value : '']; }")
+                """(dados) => {
+                    const setar = (id, valor) => {
+                        const el = document.getElementById(id);
+                        if (!el || el.offsetParent === null) return '';
+                        const setter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value').set;
+                        setter.call(el, valor);
+                        for (const ev of ['input', 'change', 'blur'])
+                            el.dispatchEvent(new Event(ev, {bubbles: true}));
+                        return el.value;
+                    };
+                    return [setar('nomePessoaFisica', dados.nome),
+                            setar('dataNascimento', dados.data)];
+                }""",
+                {"nome": nome, "data": nascimento},
+            )
+            page.wait_for_timeout(600)
             if valores[0].strip() and valores[1].strip():
                 break
-        except (PWTimeout, RuntimeError):
-            pass
+            print(f"(tentativa {tentativa + 1}: valores={valores!r})",
+                  end=" ", flush=True)
+        except (PWTimeout, RuntimeError) as e:
+            print(f"(tentativa {tentativa + 1}: {type(e).__name__})",
+                  end=" ", flush=True)
     else:
         return "erro_painel_filtros_instavel"
     page.evaluate("document.getElementById('botao-pesquisar').click()")
@@ -295,6 +308,11 @@ def cadastrar_aluno(page, a):
     if a["pai"]:
         preencher_por_placeholder(page, "5b - Nome completo da filiação 2",
                                   a["pai"])
+    filiacoes = page.evaluate(
+        "() => ['5a', '5b'].map(p => { const el = document.querySelector("
+        "`input[placeholder*='${p} - Nome completo']`);"
+        " return el ? el.value : null; })")
+    print(f"(5a={filiacoes[0]!r} 5b={filiacoes[1]!r})", end=" ", flush=True)
     passo("selects")
     escolher_select_por_rotulo(page, "6 - Sexo", SEXO_OPCAO[a["sexo"]])
     escolher_select_por_rotulo(page, "7 - Cor/Raça",
@@ -315,6 +333,16 @@ def cadastrar_aluno(page, a):
     passo("continuar")
     clicar_botao_js(page, "Continuar")
     page.wait_for_timeout(1500)
+    corpo = page.locator("body").inner_text()
+    if "Existem erros impeditivos" in corpo:
+        # captura as linhas de erro do banner de validação
+        detalhe = " | ".join(
+            l.strip() for l in corpo.splitlines()
+            if l.strip() and ("não permitido" in l or "obrigatório" in l
+                              or l.strip().startswith(("5", "6", "7", "8",
+                                                       "9", "1")))
+        )[:200]
+        return f"erro_validacao({detalhe})"
     clicar_botao_js(page, "Sim")           # diálogo de confirmação
     page.wait_for_timeout(2500)
     if "Campo obrigatório" in page.locator("body").inner_text():
