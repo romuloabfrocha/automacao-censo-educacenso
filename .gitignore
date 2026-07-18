@@ -11,6 +11,9 @@ perfil_chrome/
 # Screenshots de erro (podem conter dados de alunos)
 erros/
 
+# Saídas do mapeamento do formulário (contêm dados de alunos)
+mapeamento_cadastro.*
+
 # Anotações locais com dados sensíveis
 CLAUDE.md
 
