@@ -209,9 +209,15 @@ def ir_para_pesquisa(page):
     return campo_cpf
 
 
+def passo(msg):
+    """Marca no console em que etapa o fluxo está (diagnóstico de timeouts)."""
+    print(f"[{msg}]", end=" ", flush=True)
+
+
 def cadastrar_aluno(page, a):
     cpf, nome, nascimento = a["cpf"], a["nome"], a["nascimento"]
 
+    passo("pesq_cpf")
     # 1) pesquisa por CPF — se agora existir, é caso pra v1 (vincular)
     campo_cpf = ir_para_pesquisa(page)
     campo_cpf.click()
@@ -234,9 +240,11 @@ def cadastrar_aluno(page, a):
     #    "Cadastrar aluno(a)" aparecer quando não há resultados).
     # Com o CPF digitado o campo de nome não fica editável — recarrega a
     # tela de pesquisa antes de usar os filtros detalhados.
+    passo("filtros")
     ir_para_pesquisa(page)
     abrir_filtros_detalhados(page)
     # ids fixos no HTML da tela de pesquisa (validados no mapeamento)
+    passo("nome_data")
     preencher_input(page, "#nomePessoaFisica", nome)
     preencher_input(page, "#dataNascimento", nascimento.replace("/", ""))
     if "/" not in page.locator("#dataNascimento").input_value():
@@ -245,6 +253,7 @@ def cadastrar_aluno(page, a):
     if pesquisa_encontrou(page):
         return "achado_por_nome_verificar_manual"
 
+    passo("botao_cadastrar")
     # 3) botão cadastrar -> formulário de dados cadastrais
     achou = page.evaluate(
         "() => { const b = document.getElementById('botao-cadastrar');"
@@ -255,6 +264,7 @@ def cadastrar_aluno(page, a):
                            timeout=TIMEOUT)
     page.wait_for_timeout(1500)
 
+    passo("form_dados")
     # 4) dados cadastrais — nome e nascimento vêm preenchidos da pesquisa
     preencher_por_placeholder(page, "2 - Número do CPF", cpf)
     if a["mae"]:
@@ -263,20 +273,24 @@ def cadastrar_aluno(page, a):
     if a["pai"]:
         preencher_por_placeholder(page, "5b - Nome completo da filiação 2",
                                   a["pai"])
+    passo("selects")
     escolher_select_por_rotulo(page, "6 - Sexo", SEXO_OPCAO[a["sexo"]])
     escolher_select_por_rotulo(page, "7 - Cor/Raça",
                                COR_OPCAO.get(a["cor"], "Não declarada"))
     escolher_select_por_rotulo(page, "8 - Nacionalidade", "Brasileira")
     page.wait_for_timeout(1500)  # UF/Município de nascimento aparecem
 
+    passo("uf_nasc")
     escolher_select_por_rotulo(page, "UF de nascimento", uf_nasc)
     page.wait_for_timeout(1500)  # municípios carregam após a UF
     escolher_select_por_rotulo(page, "Município de nascimento", municipio_nasc)
 
+    passo("radios")
     respondidos = responder_nao_pendentes(page)
     print(f"(grupos Sim/Não = Não: {respondidos})", end=" ", flush=True)
     page.wait_for_timeout(800)
 
+    passo("continuar")
     clicar_botao_js(page, "Continuar")
     page.wait_for_timeout(1500)
     clicar_botao_js(page, "Sim")           # diálogo de confirmação
@@ -284,6 +298,7 @@ def cadastrar_aluno(page, a):
     if "Campo obrigatório" in page.locator("body").inner_text():
         return "erro_campos_obrigatorios_cadastro"
 
+    passo("residencia")
     # 5) residência (regra fixa: igual para todos os alunos)
     page.wait_for_selector("mat-form-field:has-text('16 - País')",
                            timeout=TIMEOUT)
@@ -296,16 +311,23 @@ def cadastrar_aluno(page, a):
     escolher_select_por_rotulo(page, "21 - Localização diferenciada",
                                RESIDENCIA_DIFERENCIADA)
 
+    passo("enviar")
     clicar_botao_js(page, "Enviar")
     page.wait_for_timeout(1500)
     clicar_botao_js(page, "Sim")           # confirmação do envio
 
+    passo("vinculo")
     # 6) o sistema cai direto no formulário de vínculo
     try:
         page.wait_for_url("**/aluno/vincular**", timeout=30_000)
     except PWTimeout:
         return "cadastro_enviado_mas_nao_caiu_no_vinculo"
     page.wait_for_timeout(1500)
+    try:
+        clicar_botao_js(page, "Sim")   # diálogo de confirmação ao entrar
+        page.wait_for_timeout(1200)    # no vínculo (visto na demonstração)
+    except RuntimeError:
+        pass                           # nem sempre aparece
 
     if a["turno"] not in TURNOS_VALIDOS:
         return f"cadastrado_sem_turma({a['turno']})"

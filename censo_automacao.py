@@ -166,7 +166,8 @@ def pesquisa_encontrou(page, espera_ms=15_000):
     como nao_encontrado na véspera existiam no sistema)."""
     try:
         page.wait_for_function(
-            "() => document.body.innerText.includes('Foi encontrado')",
+            "() => /Foi encontrado|Foram encontrados/"
+            ".test(document.body.innerText)",
             timeout=espera_ms)
         return True
     except PWTimeout:
