@@ -1,0 +1,369 @@
+# -*- coding: utf-8 -*-
+"""
+Automação v2 — CADASTRA no Educacenso os alunos com status `nao_encontrado`
+do censo_resultado.csv e, em seguida, faz o vínculo à turma (o sistema cai
+direto no formulário de vínculo após o cadastro).
+
+Fluxo mapeado ao vivo em 18/07/2026 (cadastro manual observado):
+  pesquisar CPF (nada) -> filtros detalhados: nome + data de nascimento
+  (nada) -> botão #botao-cadastrar -> /aluno/dados-cadastrais
+  -> CPF, filiações, Sexo, Cor/Raça, Nacionalidade -> UF/Município de
+  nascimento -> dois grupos Sim/Não = "Não" -> Continuar -> Sim
+  -> residência: Brasil/DF/Brasília/Urbana/sem localização diferenciada
+  -> Enviar -> Sim -> /aluno/vincular (formulário que a v1 já preenche)
+
+Rodar:
+  python cadastro_automacao.py [max_cadastros]
+  (ex.: "python cadastro_automacao.py 1" para testar com um aluno só)
+
+Progresso em cadastro_resultado.csv (retomável).
+"""
+import csv
+import os
+import sys
+
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+from censo_automacao import (
+    URL_BASE, PASTA, PASTA_PERFIL, PASTA_ERROS, TIMEOUT, TURNOS_VALIDOS,
+    ARQ_RESULTADO, fazer_login, carregar_alunos, chave,
+    clicar_botao_js, preencher_formulario_vinculo)
+
+ARQ_CADASTRO = os.path.join(PASTA, "cadastro_resultado.csv")
+
+# Regras fixas decididas pelo usuário (18/07/2026): residência igual p/ todos
+RESIDENCIA_PAIS = "Brasil"
+RESIDENCIA_UF = "DF"
+RESIDENCIA_MUNICIPIO = "Brasília"
+RESIDENCIA_ZONA = "Urbana"
+RESIDENCIA_DIFERENCIADA = "Não está em área de localização diferenciada"
+
+SEXO_OPCAO = {"F": "Feminino", "FEMININO": "Feminino",
+              "M": "Masculino", "MASCULINO": "Masculino"}
+COR_OPCAO = {"BRANCA": "Branca", "PRETA": "Preta", "PARDA": "Parda",
+             "AMARELA": "Amarela", "INDIGENA": "Indígena",
+             "INDÍGENA": "Indígena"}
+
+
+def escolher_select_por_rotulo(page, rotulo, opcao):
+    """Abre o mat-select do mat-form-field cujo rótulo contém `rotulo` e
+    escolhe a opção de texto `opcao` (comparação sem acentos/maiúsculas).
+    Os selects do cadastro têm id dinâmico do Angular, então a busca é pelo
+    rótulo visível; cliques JS nativos como no restante do projeto."""
+    aberto = page.evaluate(
+        """(rotulo) => {
+            const vis = el => el.offsetParent !== null;
+            const ff = [...document.querySelectorAll('mat-form-field')]
+                .filter(vis)
+                .find(f => f.textContent.includes(rotulo));
+            const sel = ff && ff.querySelector('mat-select');
+            if (!sel) return false;
+            sel.click();
+            return true;
+        }""",
+        rotulo,
+    )
+    if not aberto:
+        raise RuntimeError(f"Select com rótulo '{rotulo}' não encontrado.")
+    page.wait_for_selector(".cdk-overlay-pane mat-option", timeout=8000)
+    page.wait_for_timeout(300)
+
+    escolhido = page.evaluate(
+        """(opcao) => {
+            const norm = t => t.normalize('NFD')
+                .replace(/[\\u0300-\\u036f]/g, '').toUpperCase().trim();
+            const ops = [...document.querySelectorAll('mat-option')];
+            const alvo = ops.find(o => norm(o.textContent) === norm(opcao))
+                || ops.find(o => norm(o.textContent).includes(norm(opcao)));
+            if (!alvo) return false;
+            alvo.click();
+            return true;
+        }""",
+        opcao,
+    )
+    if not escolhido:
+        raise RuntimeError(f"Opção '{opcao}' não encontrada em '{rotulo}'.")
+    page.wait_for_timeout(600)
+
+
+def preencher_por_placeholder(page, trecho, valor):
+    """Digita tecla a tecla no input cujo placeholder contém `trecho`
+    (campos com máscara exigem digitação sequencial)."""
+    campo = page.locator(f"input[placeholder*='{trecho}']").first
+    campo.wait_for(state="visible", timeout=TIMEOUT)
+    campo.click()
+    campo.press("Control+a")
+    campo.press("Delete")
+    campo.press_sequentially(valor, delay=40)
+
+
+def responder_nao_pendentes(page):
+    """Marca "Não" em todo grupo Sim/Não visível ainda sem resposta
+    (no cadastro observado eram dois grupos, ambos respondidos "Não")."""
+    return page.evaluate(
+        """() => {
+            const vis = el => el.offsetParent !== null;
+            let n = 0;
+            for (const g of [...document.querySelectorAll('mat-radio-group')]
+                    .filter(vis)) {
+                const radios = [...g.querySelectorAll('mat-radio-button')];
+                const nao = radios.find(r => r.textContent.trim() === 'Não');
+                if (!nao) continue;
+                const jaMarcado = radios.some(r => {
+                    const i = r.querySelector('input');
+                    return i && i.checked;
+                });
+                if (jaMarcado) continue;
+                const input = nao.querySelector('input');
+                if (input) { input.click(); n++; }
+            }
+            return n;
+        }""")
+
+
+# Capitais são pares cidade+UF inequívocos; demais cidades precisam vir
+# como "CIDADE-UF" na planilha (há homônimas em vários estados)
+CAPITAL_UF = {
+    "BRASILIA": "DF", "SAO PAULO": "SP", "RIO DE JANEIRO": "RJ",
+    "BELO HORIZONTE": "MG", "SALVADOR": "BA", "FORTALEZA": "CE",
+    "RECIFE": "PE", "MANAUS": "AM", "BELEM": "PA", "GOIANIA": "GO",
+    "CURITIBA": "PR", "PORTO ALEGRE": "RS", "FLORIANOPOLIS": "SC",
+    "VITORIA": "ES", "NATAL": "RN", "JOAO PESSOA": "PB", "MACEIO": "AL",
+    "ARACAJU": "SE", "TERESINA": "PI", "SAO LUIS": "MA", "PALMAS": "TO",
+    "CUIABA": "MT", "CAMPO GRANDE": "MS", "PORTO VELHO": "RO",
+    "RIO BRANCO": "AC", "BOA VISTA": "RR", "MACAPA": "AP",
+}
+
+
+def sem_acento(texto):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", texto)
+                   if unicodedata.category(c) != "Mn").upper().strip()
+
+
+def naturalidade_uf_municipio(naturalidade):
+    """"SAO JOSE DO BELMONTE-PE" -> ("PE", "SAO JOSE DO BELMONTE");
+    capital sem UF -> UF conhecida; cidade ambígua sem UF -> None."""
+    nat = naturalidade.strip()
+    if "-" in nat:
+        cidade, uf = nat.rsplit("-", 1)
+        if len(uf.strip()) == 2:
+            return uf.strip(), cidade.strip()
+    cidade = sem_acento(nat)
+    if cidade in CAPITAL_UF:
+        return CAPITAL_UF[cidade], nat
+    return None, None
+
+
+def ir_para_pesquisa(page):
+    page.goto(URL_BASE + "/aluno/pesquisar", wait_until="domcontentloaded")
+    campo_cpf = page.get_by_placeholder("CPF", exact=True)
+    try:
+        campo_cpf.wait_for(state="visible", timeout=TIMEOUT)
+    except PWTimeout:
+        page.goto(URL_BASE + "/inicio", wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        page.goto(URL_BASE + "/aluno/pesquisar", wait_until="domcontentloaded")
+        campo_cpf.wait_for(state="visible", timeout=TIMEOUT)
+    page.wait_for_timeout(1500)
+    return campo_cpf
+
+
+def cadastrar_aluno(page, a):
+    cpf, nome, nascimento = a["cpf"], a["nome"], a["nascimento"]
+
+    # 1) pesquisa por CPF — se agora existir, é caso pra v1 (vincular)
+    campo_cpf = ir_para_pesquisa(page)
+    campo_cpf.click()
+    campo_cpf.press("Control+a")
+    campo_cpf.press("Delete")
+    campo_cpf.press_sequentially(cpf, delay=40)
+    page.get_by_role("button", name="Pesquisar").click()
+    page.wait_for_timeout(3000)
+    if "Foi encontrado" in page.locator("body").inner_text():
+        return "ja_existe_rodar_v1"
+
+    if not nascimento:
+        return "sem_data_nascimento_na_planilha"
+    if not SEXO_OPCAO.get(a["sexo"]):
+        return f"sexo_invalido({a['sexo']})"
+    uf_nasc, municipio_nasc = naturalidade_uf_municipio(a["naturalidade"])
+    if not uf_nasc:
+        return f"naturalidade_sem_uf({a['naturalidade']})"
+
+    # 2) pesquisa detalhada por nome + nascimento (necessária pro botão
+    #    "Cadastrar aluno(a)" aparecer quando não há resultados)
+    page.evaluate(
+        """() => {
+            const alvo = [...document.querySelectorAll('mat-panel-title')]
+                .find(t => t.textContent.includes('Filtros de pesquisa'));
+            if (alvo) alvo.click();
+        }""")
+    page.wait_for_timeout(800)
+    preencher_por_placeholder(page, "Nome completo", nome)
+    preencher_por_placeholder(page, "Data de nascimento",
+                              nascimento.replace("/", ""))
+    campo_data = page.locator("input[placeholder*='Data de nascimento']").first
+    if "/" not in campo_data.input_value():   # campo sem máscara automática
+        preencher_por_placeholder(page, "Data de nascimento", nascimento)
+    page.evaluate("document.getElementById('botao-pesquisar').click()")
+    page.wait_for_timeout(3000)
+    if "Foi encontrado" in page.locator("body").inner_text():
+        return "achado_por_nome_verificar_manual"
+
+    # 3) botão cadastrar -> formulário de dados cadastrais
+    achou = page.evaluate(
+        "() => { const b = document.getElementById('botao-cadastrar');"
+        " if (!b) return false; b.click(); return true; }")
+    if not achou:
+        return "botao_cadastrar_nao_apareceu"
+    page.wait_for_selector("input[placeholder*='2 - Número do CPF']",
+                           timeout=TIMEOUT)
+    page.wait_for_timeout(1500)
+
+    # 4) dados cadastrais — nome e nascimento vêm preenchidos da pesquisa
+    preencher_por_placeholder(page, "2 - Número do CPF", cpf)
+    if a["mae"]:
+        preencher_por_placeholder(page, "5a - Nome completo da filiação 1",
+                                  a["mae"])
+    if a["pai"]:
+        preencher_por_placeholder(page, "5b - Nome completo da filiação 2",
+                                  a["pai"])
+    escolher_select_por_rotulo(page, "6 - Sexo", SEXO_OPCAO[a["sexo"]])
+    escolher_select_por_rotulo(page, "7 - Cor/Raça",
+                               COR_OPCAO.get(a["cor"], "Não declarada"))
+    escolher_select_por_rotulo(page, "8 - Nacionalidade", "Brasileira")
+    page.wait_for_timeout(1500)  # UF/Município de nascimento aparecem
+
+    escolher_select_por_rotulo(page, "UF de nascimento", uf_nasc)
+    page.wait_for_timeout(1500)  # municípios carregam após a UF
+    escolher_select_por_rotulo(page, "Município de nascimento", municipio_nasc)
+
+    respondidos = responder_nao_pendentes(page)
+    print(f"(grupos Sim/Não = Não: {respondidos})", end=" ", flush=True)
+    page.wait_for_timeout(800)
+
+    clicar_botao_js(page, "Continuar")
+    page.wait_for_timeout(1500)
+    clicar_botao_js(page, "Sim")           # diálogo de confirmação
+    page.wait_for_timeout(2500)
+    if "Campo obrigatório" in page.locator("body").inner_text():
+        return "erro_campos_obrigatorios_cadastro"
+
+    # 5) residência (regra fixa: igual para todos os alunos)
+    page.wait_for_selector("mat-form-field:has-text('16 - País')",
+                           timeout=TIMEOUT)
+    escolher_select_por_rotulo(page, "16 - País de residência", RESIDENCIA_PAIS)
+    page.wait_for_timeout(1200)
+    escolher_select_por_rotulo(page, "18 - UF", RESIDENCIA_UF)
+    page.wait_for_timeout(1500)  # municípios carregam após a UF
+    escolher_select_por_rotulo(page, "19 - Município", RESIDENCIA_MUNICIPIO)
+    escolher_select_por_rotulo(page, "20 - Localização/Zona", RESIDENCIA_ZONA)
+    escolher_select_por_rotulo(page, "21 - Localização diferenciada",
+                               RESIDENCIA_DIFERENCIADA)
+
+    clicar_botao_js(page, "Enviar")
+    page.wait_for_timeout(1500)
+    clicar_botao_js(page, "Sim")           # confirmação do envio
+
+    # 6) o sistema cai direto no formulário de vínculo
+    try:
+        page.wait_for_url("**/aluno/vincular**", timeout=30_000)
+    except PWTimeout:
+        return "cadastro_enviado_mas_nao_caiu_no_vinculo"
+    page.wait_for_timeout(1500)
+
+    if a["turno"] not in TURNOS_VALIDOS:
+        return f"cadastrado_sem_turma({a['turno']})"
+    status_vinculo = preencher_formulario_vinculo(
+        page, f"{a['ano']} {a['turno']}", cpf)
+    return f"cadastrado_{status_vinculo}"   # ex.: cadastrado_vinculado
+
+
+# ------------------------- PRINCIPAL -------------------------
+def carregar_cadastro_feito():
+    feitos = {}
+    if os.path.exists(ARQ_CADASTRO):
+        with open(ARQ_CADASTRO, encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                feitos[f"{r['cpf']}|{r['ano']}"] = r["status"]
+    return feitos
+
+
+def gravar_cadastro(linhas):
+    with open(ARQ_CADASTRO, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["cpf", "nome", "turno", "ano", "status"])
+        w.writeheader()
+        w.writerows(linhas)
+
+
+def main():
+    max_cadastros = int(sys.argv[1]) if len(sys.argv) > 1 else 10**9
+
+    if not os.path.exists(ARQ_RESULTADO):
+        sys.exit("censo_resultado.csv não existe — rode a v1 primeiro.")
+    with open(ARQ_RESULTADO, encoding="utf-8") as f:
+        nao_encontrados = {f"{r['cpf']}|{r['ano']}"
+                           for r in csv.DictReader(f)
+                           if r["status"] == "nao_encontrado"}
+
+    feitos = carregar_cadastro_feito()
+    ok = {"cadastrado_vinculado", "ja_existe_rodar_v1"}
+    alvo = [a for a in carregar_alunos()
+            if chave(a) in nao_encontrados and feitos.get(chave(a)) not in ok]
+    print(f"\n[plano] {len(nao_encontrados)} nao_encontrado no CSV da v1, "
+          f"{len(alvo)} pendentes de cadastro"
+          + (f" (limite desta execução: {max_cadastros})" if max_cadastros < 10**9
+             else "") + ".\n")
+    if not alvo:
+        print("Nada a fazer.")
+        return
+
+    resultado = [{"cpf": a["cpf"], "nome": a["nome"], "turno": a["turno"],
+                  "ano": a["ano"], "status": feitos.get(chave(a), "pendente")}
+                 for a in alvo]
+    por_chave = {f"{r['cpf']}|{r['ano']}": r for r in resultado}
+
+    os.makedirs(PASTA_ERROS, exist_ok=True)
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            PASTA_PERFIL, headless=False,
+            args=["--start-maximized"], no_viewport=True)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.set_default_timeout(TIMEOUT)
+        try:
+            fazer_login(page)
+            cadastrados = 0
+            for i, a in enumerate(alvo, 1):
+                if cadastrados >= max_cadastros:
+                    break
+                print(f"[{i}/{len(alvo)}] ({a['ano']}) {a['nome']} "
+                      f"({a['cpf']}, {a['turno']})...", end=" ", flush=True)
+                try:
+                    status = cadastrar_aluno(page, a)
+                except PWTimeout:
+                    status = "erro_timeout"
+                except Exception as e:
+                    status = f"erro({type(e).__name__})"
+                if status.startswith("erro"):
+                    try:
+                        page.screenshot(path=os.path.join(
+                            PASTA_ERROS, f"cadastro_{a['cpf']}.png"))
+                    except Exception:
+                        pass
+                if status.startswith(("cadastrado", "erro")):
+                    cadastrados += 1   # conta tentativas reais de cadastro
+                print(status)
+                por_chave[f"{a['cpf']}|{a['ano']}"]["status"] = status
+                gravar_cadastro(resultado)
+        finally:
+            gravar_cadastro(resultado)
+            resumo = {}
+            for r in resultado:
+                resumo[r["status"]] = resumo.get(r["status"], 0) + 1
+            print(f"\nResultado salvo em: {ARQ_CADASTRO}\nResumo: {resumo}")
+            ctx.close()
+
+
+if __name__ == "__main__":
+    main()

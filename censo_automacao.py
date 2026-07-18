@@ -160,6 +160,16 @@ def clicar_botao_js(page, texto_exato):
 
 
 # ------------------------- PLANILHA -------------------------
+def _celula(row, idx, i):
+    """Valor da coluna de cabeçalho `i` (ou "" se ausente); datas viram dd/mm/aaaa."""
+    if i not in idx or idx[i] >= len(row) or row[idx[i]] is None:
+        return ""
+    v = row[idx[i]]
+    if hasattr(v, "strftime"):
+        return v.strftime("%d/%m/%Y")
+    return str(v).strip()
+
+
 def carregar_alunos():
     wb = openpyxl.load_workbook(PLANILHA)
     alunos = []
@@ -169,15 +179,30 @@ def carregar_alunos():
             print(f"[aviso] Nenhuma aba contendo '{trecho}' — pulando.")
             continue
         ws = wb[nomes[0]]
+        cab = [str(c.value).strip().upper() if c.value else "" for c in ws[1]]
+        idx = {nome: i for i, nome in enumerate(cab)}
+        for obrig in ("CPF", "NOME", "TURNO"):
+            if obrig not in idx:
+                sys.exit(f"[planilha] Aba {ws.title!r} sem a coluna {obrig!r}.")
         qtd = 0
         for row in ws.iter_rows(min_row=2, values_only=True):
-            if row[1] is None:
+            cpf_bruto = _celula(row, idx, "CPF")
+            if not cpf_bruto:
                 continue
-            cpf = str(row[1]).strip().replace(".", "").replace("-", "").zfill(11)
-            nome = str(row[2]).strip()
-            turno = str(row[3]).strip().upper()
-            alunos.append({"cpf": cpf, "nome": nome, "turno": turno,
-                           "ano": ano, "aba": ws.title})
+            cpf = cpf_bruto.replace(".", "").replace("-", "").zfill(11)
+            alunos.append({
+                "cpf": cpf,
+                "nome": _celula(row, idx, "NOME"),
+                "turno": _celula(row, idx, "TURNO").upper(),
+                "ano": ano, "aba": ws.title,
+                # campos extras usados no cadastro de aluno novo (v2)
+                "nascimento": _celula(row, idx, "DT. NASCIMENTO"),
+                "mae": _celula(row, idx, "MAE"),
+                "pai": _celula(row, idx, "PAI"),
+                "sexo": _celula(row, idx, "SEXO").upper(),
+                "cor": _celula(row, idx, "COR").upper(),
+                "naturalidade": _celula(row, idx, "NATURALIDADE").upper(),
+            })
             qtd += 1
         print(f"[planilha] Aba {ws.title!r}: {qtd} alunos -> turmas {ano}")
     return alunos
@@ -308,6 +333,13 @@ def processar_aluno(page, aluno):
     page.locator("button:has(mat-icon:text('how_to_reg'))").first.click()
 
     # 5) formulário de vínculo
+    return preencher_formulario_vinculo(page, turma_chave, cpf)
+
+
+def preencher_formulario_vinculo(page, turma_chave, cpf=""):
+    """Preenche e envia o formulário "Vincular aluno" (usado tanto no fluxo
+    de vínculo da v1 quanto após o cadastro de aluno novo na v2, quando o
+    sistema cai direto nesta tela)."""
     campo_escola = page.get_by_placeholder("Código da escola")
     campo_escola.wait_for(state="visible", timeout=TIMEOUT)
     page.wait_for_timeout(1000)
