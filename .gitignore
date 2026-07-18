@@ -13,6 +13,7 @@ erros/
 
 # Saídas do mapeamento do formulário (contêm dados de alunos)
 mapeamento_cadastro.*
+observacao_cadastro.log
 
 # Anotações locais com dados sensíveis
 CLAUDE.md
