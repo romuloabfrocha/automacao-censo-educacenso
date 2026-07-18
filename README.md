@@ -29,8 +29,10 @@ playwright install chromium
    INEP da escola. **O `.env` nunca deve ser commitado.**
 2. Monte sua planilha seguindo o `MODELO_PLANILHA.xlsx`:
    - Uma aba por ano letivo (o nome da aba deve conter o ano, ex.: "1º 2026")
-   - Colunas usadas: **CPF** (col. B), **NOME** (col. C), **TURNO** (col. D —
-     MATUTINO, NOTURNO ou INTEGRAL)
+   - Colunas usadas pelo script: **CPF** (col. B), **NOME** (col. C),
+     **TURNO** (col. D — MATUTINO, NOTURNO ou INTEGRAL)
+   - A col. A (**STATUS CENSO**) é livre para acompanhamento manual — o
+     script não a lê
    - As turmas no Educacenso devem conter "\<ano\> \<turno\>" no nome
      (ex.: "1º 2026 MATUTINO")
 
