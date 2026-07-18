@@ -1,0 +1,23 @@
+# Segredos — NUNCA commitar
+.env
+
+# Dados reais de alunos
+DADOSCENSO2026.xlsx
+censo_resultado.csv
+
+# Sessão do navegador (contém cookies de login)
+perfil_chrome/
+
+# Screenshots de erro (podem conter dados de alunos)
+erros/
+
+# Anotações locais com dados sensíveis
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Diversos
+Nova pasta/
